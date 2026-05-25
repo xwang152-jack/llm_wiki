@@ -301,47 +301,32 @@ export async function retryTask(taskId: string): Promise<void> {
 
   task.status = "pending"
   task.error = null
+  task.retryCount = 0
   await saveQueue(currentProjectPath)
   processNext(currentProjectId)
 }
 
 /**
- * Retry all failed tasks in the current project's queue with staggered
- * exponential backoff. Tasks that have already exhausted MAX_RETRIES
- * automatic attempts are left as `permanently_failed` and require
- * explicit `retryTask()` to re-queue.
- *
- * Returns the number of tasks retried (excluding permanently failed).
+ * Retry every failed task for the active project.
+ * Returns the number of tasks requeued.
  */
-export async function retryAllFailed(): Promise<number> {
-  let count = 0
-  const now = Date.now()
+export async function retryAllFailedTasks(): Promise<number> {
+  if (!currentProjectId) return 0
+
+  let requeued = 0
   for (const task of queue) {
-    if (task.projectId !== currentProjectId) continue
-    if (task.status !== "failed" && task.status !== "permanently_failed") continue
-
-    if (task.status === "permanently_failed") {
-      // Allow manual retry of permanently_failed tasks (resets counter)
-      task.retryCount = 0
-    }
-
+    if (task.projectId !== currentProjectId || task.status !== "failed") continue
     task.status = "pending"
     task.error = null
-    task.lastRetryAt = now
-    count++
+    task.retryCount = 0
+    requeued++
   }
-  if (count > 0) {
-    await saveQueue(currentProjectPath)
-    // Stagger processing to avoid hammering the LLM API — each task
-    // gets a small delay before it's picked up.
-    const staggerMs = 500
-    for (let i = 0; i < count; i++) {
-      setTimeout(() => {
-        if (currentProjectId) processNext(currentProjectId)
-      }, i * staggerMs)
-    }
-  }
-  return count
+
+  if (requeued === 0) return 0
+
+  await saveQueue(currentProjectPath)
+  processNext(currentProjectId)
+  return requeued
 }
 
 /**
