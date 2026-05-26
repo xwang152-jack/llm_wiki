@@ -139,4 +139,18 @@ describe("project-store app-state contract", () => {
     })
     expect(mockStore.save).toHaveBeenCalledTimes(1)
   })
+
+  it("persists onboarding as seen after the first display", async () => {
+    mockStore.state[APP_STATE_KEYS.schemaVersion] = APP_STATE_SCHEMA_VERSION
+
+    const projectStore = await import("./project-store")
+
+    expect(await projectStore.hasSeenOnboarding()).toBe(false)
+
+    await projectStore.markOnboardingSeen()
+
+    expect(await projectStore.hasSeenOnboarding()).toBe(true)
+    expect(mockStore.state[APP_STATE_KEYS.onboardingSeen]).toBe(true)
+    expect(mockStore.save).toHaveBeenCalledTimes(1)
+  })
 })

@@ -28,6 +28,7 @@ import { normalizePath } from "@/lib/path-utils"
 const STORE_NAME = APP_STATE_FILE_NAME
 const RECENT_PROJECTS_KEY = APP_STATE_KEYS.recentProjects
 const LAST_PROJECT_KEY = APP_STATE_KEYS.lastProject
+const ONBOARDING_SEEN_KEY = APP_STATE_KEYS.onboardingSeen
 let appStateInitialized = false
 let lastAppStateHealth: AppStateMigrationHealth = {
   schemaVersion: APP_STATE_SCHEMA_VERSION,
@@ -81,6 +82,17 @@ export async function saveLastProject(project: WikiProject): Promise<void> {
   const store = await getStore()
   await store.set(LAST_PROJECT_KEY, project)
   await addToRecentProjects(project)
+}
+
+export async function hasSeenOnboarding(): Promise<boolean> {
+  const store = await getStore()
+  return (await store.get<boolean>(ONBOARDING_SEEN_KEY)) === true
+}
+
+export async function markOnboardingSeen(): Promise<void> {
+  const store = await getStore()
+  await store.set(ONBOARDING_SEEN_KEY, true)
+  await store.save()
 }
 
 export async function addToRecentProjects(

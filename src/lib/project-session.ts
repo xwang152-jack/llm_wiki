@@ -5,9 +5,11 @@ import { useWikiStore } from "@/stores/wiki-store"
 import { loadChatHistory, loadReviewItems } from "@/lib/persist"
 import {
   getRecentProjects,
+  hasSeenOnboarding,
   loadOutputLanguage,
   loadScheduledImportConfig,
   loadSourceWatchConfig,
+  markOnboardingSeen,
   saveLastProject,
   saveScheduledImportConfig,
 } from "@/lib/project-store"
@@ -31,9 +33,9 @@ export async function openProjectSession(
 
   ui.setProject(project)
 
-  const recentProjects = await getRecentProjects()
-  if (recentProjects.length <= 1) {
+  if (!(await hasSeenOnboarding())) {
     ui.setShowOnboarding(true)
+    await markOnboardingSeen()
   }
 
   const store = useWikiStore.getState()

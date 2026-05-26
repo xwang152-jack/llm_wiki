@@ -12,6 +12,7 @@ export const APP_STATE_KEYS = {
   sourceWatchConfig: "sourceWatchConfig",
   recentProjects: "recentProjects",
   lastProject: "lastProject",
+  onboardingSeen: "onboardingSeen",
 } as const
 
 export interface ProjectRegistryEntry {
