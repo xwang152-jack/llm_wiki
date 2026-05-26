@@ -6,11 +6,10 @@ import {
   stopProjectFileWatcher,
   type FileSyncPayload,
 } from "@/commands/file-sync"
-import { useFileSyncStore } from "@/stores/file-sync-store"
-import { useWikiStore } from "@/stores/wiki-store"
+import { defaultFileSyncRuntime, type FileSyncRuntime } from "@/lib/file-sync-runtime"
 import { getFileStem, normalizePath } from "@/lib/path-utils"
 import type { WikiProject } from "@/types/wiki"
-import type { SourceWatchConfig } from "@/stores/wiki-store"
+import type { SourceWatchConfig } from "@/types/config"
 import type { FileChangeTask } from "@/commands/file-sync"
 import {
   cleanupDeletedWikiPages,
@@ -32,27 +31,28 @@ let handledChangeTaskKeys = new Set<string>()
 export async function startProjectFileSync(
   project: WikiProject,
   sourceWatchConfig?: SourceWatchConfig,
+  runtime: FileSyncRuntime = defaultFileSyncRuntime,
 ): Promise<void> {
   await stopProjectFileSync()
   const seq = ++startSeq
   activeSourceWatchConfig = normalizeSourceWatchConfig(sourceWatchConfig)
-  useFileSyncStore.getState().setRunning(true)
-  useFileSyncStore.getState().setLastError(null)
+  runtime.setRunning(true)
+  runtime.setLastError(null)
 
   unlistenQueue = await listen<FileSyncPayload>("file-sync://queue-updated", (event) => {
-    if (event.payload.projectId !== useWikiStore.getState().project?.id) return
-    useFileSyncStore.getState().setTasks(event.payload.tasks)
+    if (event.payload.projectId !== runtime.getCurrentProject()?.id) return
+    runtime.setTasks(event.payload.tasks)
   })
 
   unlistenChanged = await listen<FileSyncPayload>("file-sync://changed", (event) => {
-    const current = useWikiStore.getState().project
+    const current = runtime.getCurrentProject()
     if (!current || event.payload.projectId !== current.id) return
-    scheduleRefreshAfterFileChanges(event.payload.tasks)
+    scheduleRefreshAfterFileChanges(event.payload.tasks, runtime)
   })
 
   try {
     const result = await startProjectFileWatcher(project.id, normalizePath(project.path), activeSourceWatchConfig)
-    if (seq !== startSeq || project.id !== useWikiStore.getState().project?.id) return
+    if (seq !== startSeq || project.id !== runtime.getCurrentProject()?.id) return
     const startupChangedTasks = mergeChangeTasks([
       ...result.changedTasks,
       ...pendingChangeTasks.values(),
@@ -64,26 +64,26 @@ export async function startProjectFileSync(
       clearTimeout(refreshTimer)
       refreshTimer = null
     }
-    useFileSyncStore.getState().setTasks(result.queue.tasks)
+    runtime.setTasks(result.queue.tasks)
     if (startupChangedTasks.length > 0) {
       const paths = [...new Set(startupChangedTasks.map((task) => task.path))]
-      await processFileChangeBatch(project, paths, startupChangedTasks)
+      await processFileChangeBatch(project, paths, startupChangedTasks, runtime)
     }
   } catch (err) {
     unlistenQueue?.()
     unlistenChanged?.()
     unlistenQueue = null
     unlistenChanged = null
-    useFileSyncStore.getState().setLastError(String(err))
+    runtime.setLastError(String(err))
     throw err
   } finally {
     if (seq === startSeq) {
-      useFileSyncStore.getState().setRunning(false)
+      runtime.setRunning(false)
     }
   }
 }
 
-export async function stopProjectFileSync(): Promise<void> {
+export async function stopProjectFileSync(runtime: FileSyncRuntime = defaultFileSyncRuntime): Promise<void> {
   startSeq++
   unlistenQueue?.()
   unlistenChanged?.()
@@ -96,7 +96,7 @@ export async function stopProjectFileSync(): Promise<void> {
   pendingRefreshPaths.clear()
   pendingChangeTasks.clear()
   handledChangeTaskKeys.clear()
-  useFileSyncStore.getState().clear()
+  runtime.clear()
   try {
     await stopProjectFileWatcher()
   } catch {
@@ -108,24 +108,28 @@ export async function stopProjectFileSync(): Promise<void> {
 export async function rescanProjectFileSync(
   project: WikiProject,
   sourceWatchConfig?: SourceWatchConfig,
+  runtime: FileSyncRuntime = defaultFileSyncRuntime,
 ): Promise<void> {
-  const config = normalizeSourceWatchConfig(sourceWatchConfig ?? useWikiStore.getState().sourceWatchConfig)
+  const config = normalizeSourceWatchConfig(sourceWatchConfig ?? runtime.getSourceWatchConfig())
   activeSourceWatchConfig = config
 
   const result = await rescanProjectFiles(project.id, normalizePath(project.path), config)
-  if (useWikiStore.getState().project?.id !== project.id) return
-  useFileSyncStore.getState().setTasks(result.queue.tasks)
+  if (runtime.getCurrentProject()?.id !== project.id) return
+  runtime.setTasks(result.queue.tasks)
 
-  if (useWikiStore.getState().project?.id !== project.id) return
+  if (runtime.getCurrentProject()?.id !== project.id) return
   if (result.changedTasks.length > 0) {
     const paths = [...new Set(result.changedTasks.map((task) => task.path))]
-    await processFileChangeBatch(project, paths, result.changedTasks)
+    await processFileChangeBatch(project, paths, result.changedTasks, runtime)
   } else {
-    await refreshAfterFileChanges(project, [])
+    await refreshAfterFileChanges(project, [], runtime)
   }
 }
 
-function scheduleRefreshAfterFileChanges(tasks: FileChangeTask[]): void {
+function scheduleRefreshAfterFileChanges(
+  tasks: FileChangeTask[],
+  runtime: FileSyncRuntime = defaultFileSyncRuntime,
+): void {
   for (const task of tasks) {
     pendingRefreshPaths.add(task.path)
     pendingChangeTasks.set(task.path, task)
@@ -133,7 +137,7 @@ function scheduleRefreshAfterFileChanges(tasks: FileChangeTask[]): void {
   if (refreshTimer) return
   refreshTimer = setTimeout(() => {
     refreshTimer = null
-    const project = useWikiStore.getState().project
+    const project = runtime.getCurrentProject()
     if (!project) {
       pendingRefreshPaths.clear()
       pendingChangeTasks.clear()
@@ -146,7 +150,7 @@ function scheduleRefreshAfterFileChanges(tasks: FileChangeTask[]): void {
       : [...pendingRefreshPaths]
     pendingRefreshPaths.clear()
     pendingChangeTasks.clear()
-    void processFileChangeBatch(project, paths, tasks)
+    void processFileChangeBatch(project, paths, tasks, runtime)
   }, 250)
 }
 
@@ -169,6 +173,7 @@ async function processFileChangeBatch(
   project: WikiProject,
   paths: string[],
   tasks: FileChangeTask[],
+  runtime: FileSyncRuntime = defaultFileSyncRuntime,
 ): Promise<void> {
   for (const task of tasks) {
     handledChangeTaskKeys.add(changeTaskKey(task))
@@ -177,23 +182,27 @@ async function processFileChangeBatch(
     handledChangeTaskKeys = new Set([...handledChangeTaskKeys].slice(-2048))
   }
   await cleanupDeletedFiles(project, tasks)
-  await enqueueRawSourceChanges(project, tasks)
-  await refreshAfterFileChanges(project, paths)
+  await enqueueRawSourceChanges(project, tasks, runtime)
+  await refreshAfterFileChanges(project, paths, runtime)
 }
 
-async function refreshAfterFileChanges(project: WikiProject, relativePaths: string[]): Promise<void> {
+async function refreshAfterFileChanges(
+  project: WikiProject,
+  relativePaths: string[],
+  runtime: FileSyncRuntime = defaultFileSyncRuntime,
+): Promise<void> {
   const pp = normalizePath(project.path)
-  const store = useWikiStore.getState()
   try {
     const tree = await listDirectory(pp)
-    useWikiStore.getState().setFileTree(tree)
+    runtime.setProjectTree(tree)
   } catch (err) {
     console.warn("[file-sync] failed to refresh file tree:", err)
   }
 
-  store.bumpDataVersion()
+  runtime.bumpProjectDataVersion()
 
-  const selected = store.selectedFile ? normalizePath(store.selectedFile) : null
+  const selectedPath = runtime.getSelectedFile()
+  const selected = selectedPath ? normalizePath(selectedPath) : null
   if (!selected) return
 
   const selectedRel = selected.startsWith(`${pp}/`) ? selected.slice(pp.length + 1) : selected
@@ -201,14 +210,18 @@ async function refreshAfterFileChanges(project: WikiProject, relativePaths: stri
 
   try {
     const content = await readFile(selected)
-    useWikiStore.getState().setFileContent(content)
+    runtime.setFileContent(content)
   } catch {
-    useWikiStore.getState().setSelectedFile(null)
-    useWikiStore.getState().setFileContent("")
+    runtime.setSelectedFile(null)
+    runtime.setFileContent("")
   }
 }
 
-async function enqueueRawSourceChanges(project: WikiProject, tasks: FileChangeTask[]): Promise<void> {
+async function enqueueRawSourceChanges(
+  project: WikiProject,
+  tasks: FileChangeTask[],
+  runtime: FileSyncRuntime = defaultFileSyncRuntime,
+): Promise<void> {
   const config = normalizeSourceWatchConfig(activeSourceWatchConfig)
   if (!config.enabled || !config.autoIngest) return
 
@@ -223,7 +236,7 @@ async function enqueueRawSourceChanges(project: WikiProject, tasks: FileChangeTa
   if (paths.length === 0) return
 
   try {
-    await enqueueSourceIngest(project, paths, useWikiStore.getState().llmConfig)
+    await enqueueSourceIngest(project, paths, runtime.getLlmConfig())
   } catch (err) {
     console.error("[file-sync] failed to enqueue raw source ingest:", err)
   }

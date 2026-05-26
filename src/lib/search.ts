@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core"
 import { normalizePath } from "@/lib/path-utils"
-import { useWikiStore } from "@/stores/wiki-store"
+import { defaultSearchRuntime, type SearchRuntime } from "@/lib/search-runtime"
 
 export interface ImageRef {
   url: string
@@ -61,10 +61,11 @@ export function tokenizeQuery(query: string): string[] {
 export async function searchWiki(
   projectPath: string,
   query: string,
+  runtime: SearchRuntime = defaultSearchRuntime,
 ): Promise<SearchResult[]> {
   if (!query.trim()) return []
   const pp = normalizePath(projectPath)
-  const embCfg = useWikiStore.getState().embeddingConfig
+  const embCfg = runtime.getEmbeddingConfig()
 
   const response = await invoke<BackendSearchResponse>("search_project", {
     projectPath: pp,
@@ -75,7 +76,7 @@ export async function searchWiki(
     embeddingConfig: embCfg,
   })
 
-  const boostPaths = useWikiStore.getState().getSearchBoostPaths(query)
+  const boostPaths = runtime.getSearchBoostPaths(query)
 
   const results = response.results.map((result) => ({
     ...result,

@@ -1,61 +1,6 @@
 import { create } from "zustand"
 import type { ChatMessage } from "@/lib/llm-client"
-import type { LlmConfig } from "@/stores/wiki-store"
-import { useWikiStore } from "@/stores/wiki-store"
 import i18n from "@/i18n"
-
-// ---------------------------------------------------------------------------
-// Conversation-summary compression
-// ---------------------------------------------------------------------------
-const summaryCache = new Map<string, { messageCount: number; summary: string }>()
-
-/**
- * Use the configured LLM to compress old messages into a short summary.
- * Best-effort — failures log a warning and fall back to a generic string.
- */
-async function summarizeHistory(
-  messages: Array<{ role: string; content: string }>,
-  llmConfig: LlmConfig,
-  conversationId: string,
-): Promise<string> {
-  // Return cached summary if message count hasn't changed
-  const cached = summaryCache.get(conversationId)
-  if (cached && cached.messageCount === messages.length) return cached.summary
-
-  const conversationText = messages
-    .map((m) => `${m.role}: ${m.content.slice(0, 200)}`)
-    .join("\n")
-
-  const { streamChat } = await import("@/lib/llm-client")
-  let summary = ""
-
-  await streamChat(
-    llmConfig,
-    [
-      {
-        role: "system",
-        content:
-          "Summarize this conversation in 2-3 sentences, preserving key facts, decisions, and topics discussed. Be concise.",
-      },
-      { role: "user", content: conversationText },
-    ],
-    {
-      onToken: (token) => {
-        summary += token
-      },
-      onDone: () => {},
-      onError: (err) => {
-        console.warn("[chat] summary failed:", err.message)
-      },
-    },
-    undefined,
-    { temperature: 0, max_tokens: 256 },
-  )
-
-  const result = summary || "Previous conversation summarized."
-  summaryCache.set(conversationId, { messageCount: messages.length, summary: result })
-  return result
-}
 
 export interface Conversation {
   id: string
@@ -113,11 +58,8 @@ interface ChatState {
   clearMessages: () => void
   setMaxHistoryMessages: (n: number) => void
   setLastQueryPages: (pages: QueryPage[]) => void
+  setConversationSummary: (conversationId: string, summary: string) => void
   removeLastAssistantMessage: () => void  // for regenerate: remove last assistant reply
-  compressHistory: () => Promise<void>
-
-  // Helpers
-  getActiveMessages: () => DisplayMessage[]
 }
 
 /**
@@ -143,7 +85,7 @@ function generateConversationId(): string {
   return `conv_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
 }
 
-export const useChatStore = create<ChatState>((set, get) => ({
+export const useChatStore = create<ChatState>((set) => ({
   conversations: [],
   activeConversationId: null,
   messages: [],
@@ -181,6 +123,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
       return {
         conversations: remaining,
         messages: state.messages.filter((m) => m.conversationId !== id),
+        conversationSummaries: Object.fromEntries(
+          Object.entries(state.conversationSummaries).filter(([conversationId]) => conversationId !== id),
+        ),
         activeConversationId: newActiveId,
       }
     }),
@@ -273,8 +218,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
         ),
       }
     })
-    // Trigger summary compression in the background (best-effort)
-    get().compressHistory()
   },
 
   setMode: (mode) => set({ mode }),
@@ -292,6 +235,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   setLastQueryPages: (lastQueryPages) => set({ lastQueryPages }),
 
+  setConversationSummary: (conversationId, summary) =>
+    set((state) => ({
+      conversationSummaries: {
+        ...state.conversationSummaries,
+        [conversationId]: summary,
+      },
+    })),
+
   removeLastAssistantMessage: () =>
     set((state) => {
       const activeId = state.activeConversationId
@@ -305,48 +256,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
         messages: state.messages.filter((m) => m.id !== msgToRemove.id),
       }
     }),
-
-  compressHistory: async () => {
-    const state = get()
-    const activeId = state.activeConversationId
-    if (!activeId) return
-
-    const msgs = state.messages.filter((m) => m.conversationId === activeId)
-    const max = state.maxHistoryMessages
-    if (msgs.length <= max * 2) return
-
-    const oldMsgs = msgs.slice(0, msgs.length - max)
-    const llmConfig = useWikiStore.getState().llmConfig
-
-    try {
-      const summary = await summarizeHistory(oldMsgs, llmConfig, activeId)
-      set({ conversationSummaries: { ...state.conversationSummaries, [activeId]: summary } })
-    } catch {
-      // Best-effort — failures are non-fatal
-    }
-  },
-
-  getActiveMessages: () => {
-    const { messages, activeConversationId, maxHistoryMessages, conversationSummaries } = get()
-    if (!activeConversationId) return []
-    const msgs = messages.filter((m) => m.conversationId === activeConversationId)
-    const max = maxHistoryMessages
-    const recent = msgs.slice(-max)
-    const summary = conversationSummaries[activeConversationId]
-    if (summary && msgs.length > max) {
-      return [
-        {
-          id: "__summary__",
-          role: "system" as const,
-          content: `[Previous conversation summary]: ${summary}`,
-          timestamp: recent[0]?.timestamp ?? Date.now(),
-          conversationId: activeConversationId,
-        },
-        ...recent,
-      ]
-    }
-    return recent
-  },
 }))
 
 export function chatMessagesToLLM(messages: DisplayMessage[]): ChatMessage[] {

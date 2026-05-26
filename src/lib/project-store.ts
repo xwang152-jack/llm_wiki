@@ -1,6 +1,17 @@
 import { load } from "@tauri-apps/plugin-store"
 import type { WikiProject } from "@/types/wiki"
-import type { ApiConfig, LlmConfig, SearchApiConfig, EmbeddingConfig, MultimodalConfig, OutputLanguage, ProviderConfigs, ProxyConfig, ScheduledImportConfig, SourceWatchConfig } from "@/stores/wiki-store"
+import type {
+  ApiConfig,
+  EmbeddingConfig,
+  LlmConfig,
+  MultimodalConfig,
+  OutputLanguage,
+  ProviderConfigs,
+  ProxyConfig,
+  ScheduledImportConfig,
+  SearchApiConfig,
+  SourceWatchConfig,
+} from "@/types/config"
 import { normalizeSourceWatchConfig } from "@/lib/source-watch-config"
 import { normalizePath } from "@/lib/path-utils"
 

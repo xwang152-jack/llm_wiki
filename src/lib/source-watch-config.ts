@@ -1,4 +1,4 @@
-import type { SourceWatchConfig } from "@/stores/wiki-store"
+import type { SourceWatchConfig } from "@/types/config"
 import { normalizePath } from "@/lib/path-utils"
 import sourceWatchDefaults from "@/lib/source-watch-defaults.json"
 

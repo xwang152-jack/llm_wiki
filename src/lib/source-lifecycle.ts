@@ -9,7 +9,7 @@ import {
   writeFile,
 } from "@/commands/fs"
 import type { WikiProject, FileNode } from "@/types/wiki"
-import type { LlmConfig } from "@/stores/wiki-store"
+import type { LlmConfig } from "@/types/config"
 import { enqueueBatch } from "@/lib/ingest-queue"
 import { hasUsableLlm } from "@/lib/has-usable-llm"
 import { getFileName, getFileStem, normalizePath } from "@/lib/path-utils"

@@ -1,6 +1,6 @@
-import { useWikiStore } from "@/stores/wiki-store"
 import { detectLanguage } from "./detect-language"
 import { getLanguagePromptName } from "./language-metadata"
+import { defaultOutputLanguageRuntime, type OutputLanguageRuntime } from "@/lib/output-language-runtime"
 
 /**
  * Get the effective output language for LLM content generation.
@@ -8,8 +8,11 @@ import { getLanguagePromptName } from "./language-metadata"
  * If user has explicitly set an outputLanguage, use it.
  * Otherwise (auto), fall back to detecting the language from the given text.
  */
-export function getOutputLanguage(fallbackText: string = ""): string {
-  const configured = useWikiStore.getState().outputLanguage
+export function getOutputLanguage(
+  fallbackText: string = "",
+  runtime: OutputLanguageRuntime = defaultOutputLanguageRuntime,
+): string {
+  const configured = runtime.getConfiguredOutputLanguage()
   if (configured && configured !== "auto") {
     return configured
   }
@@ -19,8 +22,11 @@ export function getOutputLanguage(fallbackText: string = ""): string {
 /**
  * Build a strong language directive to inject into system prompts.
  */
-export function buildLanguageDirective(fallbackText: string = ""): string {
-  const lang = getOutputLanguage(fallbackText)
+export function buildLanguageDirective(
+  fallbackText: string = "",
+  runtime: OutputLanguageRuntime = defaultOutputLanguageRuntime,
+): string {
+  const lang = getOutputLanguage(fallbackText, runtime)
   const promptLang = getLanguagePromptName(lang)
   return [
     `## ⚠️ MANDATORY OUTPUT LANGUAGE: ${promptLang}`,
@@ -36,7 +42,10 @@ export function buildLanguageDirective(fallbackText: string = ""): string {
 /**
  * Short reminder version — for placing right before user's current message.
  */
-export function buildLanguageReminder(fallbackText: string = ""): string {
-  const lang = getOutputLanguage(fallbackText)
+export function buildLanguageReminder(
+  fallbackText: string = "",
+  runtime: OutputLanguageRuntime = defaultOutputLanguageRuntime,
+): string {
+  const lang = getOutputLanguage(fallbackText, runtime)
   return `REMINDER: All output must be in ${getLanguagePromptName(lang)}. Do not use any other language.`
 }

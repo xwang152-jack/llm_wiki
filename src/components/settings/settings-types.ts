@@ -1,5 +1,5 @@
 import type { CustomApiMode } from "./llm-presets"
-import type { AzureModelFamily, ReasoningConfig, SourceWatchConfig } from "@/stores/wiki-store"
+import type { AzureModelFamily, ReasoningConfig, SourceWatchConfig } from "@/types/config"
 
 /**
  * Shape of the draft state each section reads from and writes into.

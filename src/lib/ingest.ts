@@ -1,10 +1,7 @@
 import { deleteFile, fileExists, readFile, writeFile, listDirectory } from "@/commands/fs"
 import { streamChat } from "@/lib/llm-client"
-import type { LlmConfig } from "@/stores/wiki-store"
-import { useWikiStore } from "@/stores/wiki-store"
-import { useChatStore } from "@/stores/chat-store"
-import { useActivityStore } from "@/stores/activity-store"
-import { useReviewStore, type ReviewItem } from "@/stores/review-store"
+import type { LlmConfig, MultimodalConfig } from "@/types/config"
+import type { ReviewItem } from "@/stores/review-store"
 import { getFileName, normalizePath } from "@/lib/path-utils"
 import {
   sourceIdentityForPath,
@@ -21,8 +18,8 @@ import {
   buildImageMarkdownSection,
 } from "@/lib/extract-source-images"
 import { captionMarkdownImages, loadCaptionCache } from "@/lib/image-caption-pipeline"
-import type { MultimodalConfig } from "@/stores/wiki-store"
 import { GENERATION_WIKI_TYPES } from "@/lib/wiki-page-types"
+import { defaultIngestRuntime, type IngestRuntime } from "@/lib/ingest-runtime"
 
 /**
  * Resolve the LLM config that the caption pipeline should use.
@@ -335,9 +332,10 @@ export async function autoIngest(
   llmConfig: LlmConfig,
   signal?: AbortSignal,
   folderContext?: string,
+  runtime: IngestRuntime = defaultIngestRuntime,
 ): Promise<string[]> {
   return withProjectLock(normalizePath(projectPath), () =>
-    autoIngestImpl(projectPath, sourcePath, llmConfig, signal, folderContext),
+    autoIngestImpl(projectPath, sourcePath, llmConfig, signal, folderContext, runtime),
   )
 }
 
@@ -347,16 +345,16 @@ async function autoIngestImpl(
   llmConfig: LlmConfig,
   signal?: AbortSignal,
   folderContext?: string,
+  runtime: IngestRuntime = defaultIngestRuntime,
 ): Promise<string[]> {
   const pp = normalizePath(projectPath)
   const sp = normalizePath(sourcePath)
-  const activity = useActivityStore.getState()
   const fileName = getFileName(sp)
   const sourceIdentity = sourceIdentityForPath(pp, sp)
   const sourceSummarySlug = sourceSummarySlugFromIdentity(sourceIdentity)
   const sourceSummaryPath = `wiki/sources/${sourceSummarySlug}.md`
   console.log(`[ingest:diag] autoIngestImpl ENTRY for "${fileName}" (project="${pp}", source="${sp}")`)
-  const activityId = activity.addItem({
+  const activityId = runtime.addActivityItem({
     type: "ingest",
     title: fileName,
     status: "running",
@@ -406,7 +404,7 @@ async function autoIngestImpl(
         // doesn't proactively scrub old wiki content. The user
         // would need to delete the wiki/sources/<slug>.md page
         // to start clean.)
-        const mmCfg = useWikiStore.getState().multimodalConfig
+        const mmCfg = runtime.getMultimodalConfig()
         if (!mmCfg.enabled) {
           console.log(
             `[ingest:caption] cache-hit + disabled — skipping caption + safety-net inject (${savedImages.length} image(s) untouched on disk)`,
@@ -422,7 +420,7 @@ async function autoIngestImpl(
                 urlToAbsPath: (url) => url,
                 concurrency: mmCfg.concurrency,
                 onProgress: (done, total) =>
-                  activity.updateItem(activityId, {
+                  runtime.updateActivityItem(activityId, {
                     detail: `Captioning images... ${done}/${total}`,
                   }),
               })
@@ -440,7 +438,7 @@ async function autoIngestImpl(
           // was added — the safety-net section was just rewritten
           // with captions, but the embeddings still reflect the old
           // empty-alt content.
-          await reembedSourceSummary(pp, sourceIdentity, sourceSummarySlug)
+          await reembedSourceSummary(pp, sourceIdentity, sourceSummarySlug, runtime)
         }
       } else {
         console.log(`[ingest:diag] cache-hit branch: skipping injection (no images returned from extraction)`)
@@ -451,7 +449,7 @@ async function autoIngestImpl(
         err instanceof Error ? err.message : err,
       )
     }
-    activity.updateItem(activityId, {
+    runtime.updateActivityItem(activityId, {
       status: "done",
       detail: `Skipped (unchanged) — ${cachedFiles.length} files from previous ingest`,
       filesWritten: cachedFiles,
@@ -476,7 +474,7 @@ async function autoIngestImpl(
   //
   // Failure here is never fatal — extractAndSaveSourceImages logs
   // and returns [] on any error.
-  activity.updateItem(activityId, { detail: "Extracting embedded images..." })
+  runtime.updateActivityItem(activityId, { detail: "Extracting embedded images..." })
   console.log(`[ingest:diag] full-pipeline branch: starting image extraction for ${sp}`)
   const savedImages = await extractAndSaveSourceImages(pp, sp, sourceSummarySlug)
   console.log(`[ingest:diag] full-pipeline branch: got ${savedImages.length} image(s)`)
@@ -526,7 +524,7 @@ async function autoIngestImpl(
   // that surface is "the source document as-is", separate from
   // "the curated wiki knowledge".
   let enrichedSourceContent = sourceContent
-  const mmCfg = useWikiStore.getState().multimodalConfig
+  const mmCfg = runtime.getMultimodalConfig()
   const captionLlm = resolveCaptionConfig(mmCfg, llmConfig)
   if (!mmCfg.enabled && savedImages.length > 0) {
     // Strip `![alt](url)` references — match the same regex shape
@@ -544,7 +542,7 @@ async function autoIngestImpl(
     savedImages.length > 0 &&
     /!\[\]\(/.test(sourceContent)
   ) {
-    activity.updateItem(activityId, { detail: "Captioning images..." })
+    runtime.updateActivityItem(activityId, { detail: "Captioning images..." })
     const ourMediaPrefix = `${pp}/wiki/media/${sourceSummarySlug}/`
     try {
       const result = await captionMarkdownImages(pp, sourceContent, captionLlm, {
@@ -558,7 +556,7 @@ async function autoIngestImpl(
         urlToAbsPath: (url) => url, // already absolute in our extraction output
         concurrency: mmCfg.concurrency,
         onProgress: (done, total) =>
-          activity.updateItem(activityId, {
+          runtime.updateActivityItem(activityId, {
             detail: `Captioning images... ${done}/${total}`,
           }),
       })
@@ -583,9 +581,10 @@ async function autoIngestImpl(
   // ── Step 1: Analysis ──────────────────────────────────────────
   // LLM reads the source and produces a structured analysis:
   // key entities, concepts, main arguments, connections to existing wiki, contradictions
-  activity.updateItem(activityId, { detail: "Step 1/2: Analyzing source..." })
+  runtime.updateActivityItem(activityId, { detail: "Step 1/2: Analyzing source..." })
 
   let analysis = ""
+  let analysisRetried = false
 
   await streamChat(
     llmConfig,
@@ -597,17 +596,17 @@ async function autoIngestImpl(
       onToken: (token) => { analysis += token },
       onDone: () => {},
       onError: (err) => {
-        activity.updateItem(activityId, { status: "error", detail: `Analysis failed: ${err.message}` })
+        runtime.updateActivityItem(activityId, { status: "error", detail: `Analysis failed: ${err.message}` })
       },
     },
     signal,
-    { temperature: 0.1, reasoning: { mode: "off" }, max_tokens: 4096 },
+    { temperature: 0.1, reasoning: { mode: "off" }, max_tokens: 8192 },
   )
 
   // A silent `return []` here would look like success to the queue
   // runner and cause the task to be filter()'d out. Throw instead so
   // processNext's catch-block path (retry / mark failed) engages.
-  const analysisActivity = useActivityStore.getState().items.find((i) => i.id === activityId)
+  const analysisActivity = runtime.getActivityItem(activityId)
   if (analysisActivity?.status === "error") {
     throw new Error(analysisActivity.detail || "Analysis stream failed")
   }
@@ -618,7 +617,7 @@ async function autoIngestImpl(
     console.warn(`[ingest:quality] Analysis validation failed: ${analysisValidation.reason}`)
     if (!analysisRetried) {
       analysisRetried = true
-      activity.updateItem(activityId, { detail: "Retrying analysis (quality gate)..." })
+      runtime.updateActivityItem(activityId, { detail: "Retrying analysis (quality gate)..." })
       analysis = ""
       await streamChat(
         llmConfig,
@@ -630,13 +629,13 @@ async function autoIngestImpl(
           onToken: (token) => { analysis += token },
           onDone: () => {},
           onError: (err) => {
-            activity.updateItem(activityId, { status: "error", detail: `Analysis retry failed: ${err.message}` })
+            runtime.updateActivityItem(activityId, { status: "error", detail: `Analysis retry failed: ${err.message}` })
           },
         },
         signal,
         { temperature: 0.3, reasoning: { mode: "off" }, max_tokens: 4096 },
       )
-      const retryActivity = useActivityStore.getState().items.find((i) => i.id === activityId)
+      const retryActivity = runtime.getActivityItem(activityId)
       if (retryActivity?.status === "error") {
         throw new Error(retryActivity.detail || "Analysis retry failed")
       }
@@ -650,7 +649,7 @@ async function autoIngestImpl(
 
   // ── Step 2: Generation ────────────────────────────────────────
   // LLM takes the analysis as context and produces wiki files + review items
-  activity.updateItem(activityId, { detail: "Step 2/2: Generating wiki pages..." })
+  runtime.updateActivityItem(activityId, { detail: "Step 2/2: Generating wiki pages..." })
 
   let generation = ""
 
@@ -687,20 +686,20 @@ async function autoIngestImpl(
       onToken: (token) => { generation += token },
       onDone: () => {},
       onError: (err) => {
-        activity.updateItem(activityId, { status: "error", detail: `Generation failed: ${err.message}` })
+        runtime.updateActivityItem(activityId, { status: "error", detail: `Generation failed: ${err.message}` })
       },
     },
     signal,
-    { temperature: 0.1, reasoning: { mode: "off" }, max_tokens: 8192 },
+    { temperature: 0.1, reasoning: { mode: "off" }, max_tokens: 16384 },
   )
 
-  const generationActivity = useActivityStore.getState().items.find((i) => i.id === activityId)
+  const generationActivity = runtime.getActivityItem(activityId)
   if (generationActivity?.status === "error") {
     throw new Error(generationActivity.detail || "Generation stream failed")
   }
 
   // ── Step 3: Write files ───────────────────────────────────────
-  activity.updateItem(activityId, { detail: "Writing files..." })
+  runtime.updateActivityItem(activityId, { detail: "Writing files..." })
   await migrateLegacySourceSummaryIfSafe(pp, sourceIdentity, sourceSummaryPath)
   const { writtenPaths, warnings: writeWarnings, hardFailures } = await writeFileBlocks(
     pp,
@@ -709,6 +708,7 @@ async function autoIngestImpl(
     sourceIdentity,
     sourceSummaryPath,
     signal,
+    runtime,
   )
 
   // Surface parser / writer warnings to the activity panel so users
@@ -719,7 +719,7 @@ async function autoIngestImpl(
     const summary = writeWarnings.length === 1
       ? writeWarnings[0]
       : `${writeWarnings.length} ingest warnings: ${writeWarnings.slice(0, 2).join(" · ")}${writeWarnings.length > 2 ? ` … (+${writeWarnings.length - 2} more in console)` : ""}`
-    activity.updateItem(activityId, { detail: summary })
+    runtime.updateActivityItem(activityId, { detail: summary })
   }
 
   // Ensure source summary page exists (LLM may not have generated it correctly)
@@ -770,8 +770,8 @@ async function autoIngestImpl(
   if (writtenPaths.length > 0) {
     try {
       const tree = await listDirectory(pp)
-      useWikiStore.getState().setFileTree(tree)
-      useWikiStore.getState().bumpDataVersion()
+      runtime.setProjectTree(tree)
+      runtime.bumpProjectDataVersion()
     } catch {
       // ignore
     }
@@ -780,7 +780,7 @@ async function autoIngestImpl(
   // ── Step 4: Parse review items ────────────────────────────────
   const reviewItems = parseReviewBlocks(generation, sp)
   if (reviewItems.length > 0) {
-    useReviewStore.getState().addItems(reviewItems)
+    runtime.addReviewItems(reviewItems)
   }
 
   // ── Step 5: Save to cache ───────────────────────────────────
@@ -801,7 +801,7 @@ async function autoIngestImpl(
   }
 
   // ── Step 6: Generate embeddings (if enabled) ───────────────
-  const embCfg = useWikiStore.getState().embeddingConfig
+  const embCfg = runtime.getEmbeddingConfig()
   if (embCfg.enabled && embCfg.model && writtenPaths.length > 0) {
     try {
       const { embedPage } = await import("@/lib/embedding")
@@ -826,7 +826,7 @@ async function autoIngestImpl(
     ? `${writtenPaths.length} files written${reviewItems.length > 0 ? `, ${reviewItems.length} review item(s)` : ""}`
     : "No files generated"
 
-  activity.updateItem(activityId, {
+  runtime.updateActivityItem(activityId, {
     status: writtenPaths.length > 0 ? "done" : "error",
     detail,
     filesWritten: writtenPaths,
@@ -1012,6 +1012,7 @@ async function writeFileBlocks(
   sourceFileName: string,
   sourceSummaryPath?: string,
   signal?: AbortSignal,
+  runtime: IngestRuntime = defaultIngestRuntime,
 ): Promise<{ writtenPaths: string[]; warnings: string[]; hardFailures: string[] }> {
   const { blocks, warnings: parseWarnings } = parseFileBlocks(text)
   const warnings = [...parseWarnings]
@@ -1026,7 +1027,7 @@ async function writeFileBlocks(
   // instead of replaying the partial result forever.
   const hardFailures: string[] = []
 
-  const targetLang = useWikiStore.getState().outputLanguage
+  const targetLang = runtime.getOutputLanguage()
 
   for (const { path: rawRelativePath, content: rawContent } of blocks) {
     let relativePath = rawRelativePath
@@ -1402,10 +1403,6 @@ export function buildGenerationPrompt(
   ].filter(Boolean).join("\n")
 }
 
-function getStore() {
-  return useChatStore.getState()
-}
-
 async function tryReadFile(path: string): Promise<string> {
   try {
     return await readFile(path)
@@ -1606,8 +1603,9 @@ async function reembedSourceSummary(
   pp: string,
   sourceIdentity: string,
   sourceSummarySlug: string,
+  runtime: IngestRuntime = defaultIngestRuntime,
 ): Promise<void> {
-  const embCfg = useWikiStore.getState().embeddingConfig
+  const embCfg = runtime.getEmbeddingConfig()
   if (!embCfg.enabled || !embCfg.model) return
   const sourceSummaryFullPath = `${pp}/wiki/sources/${sourceSummarySlug}.md`
   try {
@@ -1632,16 +1630,16 @@ export async function startIngest(
   sourcePath: string,
   llmConfig: LlmConfig,
   signal?: AbortSignal,
+  runtime: IngestRuntime = defaultIngestRuntime,
 ): Promise<void> {
   const pp = normalizePath(projectPath)
   const sp = normalizePath(sourcePath)
   const sourceIdentity = sourceIdentityForPath(pp, sp)
   const sourceSummarySlug = sourceSummarySlugFromIdentity(sourceIdentity)
-  const store = getStore()
-  store.setMode("ingest")
-  store.setIngestSource(sp)
-  store.clearMessages()
-  store.setStreaming(false)
+  runtime.setChatMode("ingest")
+  runtime.setIngestSource(sp)
+  runtime.clearChatMessages()
+  runtime.setChatStreaming(false)
 
   // Extract embedded images upfront — independent of the LLM call
   // that follows. Done eagerly here (rather than in
@@ -1690,8 +1688,8 @@ export async function startIngest(
     "```",
   ].join("\n")
 
-  store.addMessage("user", userMessage)
-  store.setStreaming(true)
+  runtime.addChatMessage("user", userMessage)
+  runtime.setChatStreaming(true)
 
   let accumulated = ""
 
@@ -1704,13 +1702,13 @@ export async function startIngest(
     {
       onToken: (token) => {
         accumulated += token
-        getStore().appendStreamToken(token)
+        runtime.appendChatStreamToken(token)
       },
       onDone: () => {
-        getStore().finalizeStream(accumulated)
+        runtime.finalizeChatStream(accumulated)
       },
       onError: (err) => {
-        getStore().finalizeStream(`Error during ingest: ${err.message}`)
+        runtime.finalizeChatStream(`Error during ingest: ${err.message}`)
       },
     },
     signal,
@@ -1722,10 +1720,10 @@ export async function executeIngestWrites(
   llmConfig: LlmConfig,
   userGuidance?: string,
   signal?: AbortSignal,
+  runtime: IngestRuntime = defaultIngestRuntime,
 ): Promise<string[]> {
   const pp = normalizePath(projectPath)
-  const store = getStore()
-  const ingestSource = store.ingestSource
+  const ingestSource = runtime.getIngestSource()
   const activeSourceIdentity = ingestSource
     ? sourceIdentityForPath(pp, ingestSource)
     : null
@@ -1741,7 +1739,7 @@ export async function executeIngestWrites(
     tryReadFile(`${pp}/wiki/index.md`),
   ])
 
-  const conversationHistory = store.messages
+  const conversationHistory = runtime.getChatMessages()
     .filter((m) => m.role !== "system")
     .map((m) => ({ role: m.role as "user" | "assistant", content: m.content }))
 
@@ -1777,8 +1775,8 @@ export async function executeIngestWrites(
 
   conversationHistory.push({ role: "user", content: writePrompt })
 
-  store.addMessage("user", writePrompt)
-  store.setStreaming(true)
+  runtime.addChatMessage("user", writePrompt)
+  runtime.setChatStreaming(true)
 
   let accumulated = ""
 
@@ -1805,13 +1803,13 @@ export async function executeIngestWrites(
     {
       onToken: (token) => {
         accumulated += token
-        getStore().appendStreamToken(token)
+        runtime.appendChatStreamToken(token)
       },
       onDone: () => {
-        getStore().finalizeStream(accumulated)
+        runtime.finalizeChatStream(accumulated)
       },
       onError: (err) => {
-        getStore().finalizeStream(`Error generating wiki files: ${err.message}`)
+        runtime.finalizeChatStream(`Error generating wiki files: ${err.message}`)
       },
     },
     signal,
@@ -1860,9 +1858,9 @@ export async function executeIngestWrites(
 
   if (writtenPaths.length > 0) {
     const fileList = writtenPaths.map((p) => `- ${p}`).join("\n")
-    getStore().addMessage("system", `Files written to wiki:\n${fileList}`)
+    runtime.addChatMessage("system", `Files written to wiki:\n${fileList}`)
   } else {
-    getStore().addMessage("system", "No files were written. The LLM response did not contain valid FILE blocks.")
+    runtime.addChatMessage("system", "No files were written. The LLM response did not contain valid FILE blocks.")
   }
 
   // Image cascade: surface any embedded images on the source-summary
@@ -1884,7 +1882,7 @@ export async function executeIngestWrites(
   // the full rationale. When captioning is disabled, we skip the
   // safety-net inject here too so the executeIngestWrites path
   // stays consistent with autoIngest.
-  const mmCfgWrites = useWikiStore.getState().multimodalConfig
+  const mmCfgWrites = runtime.getMultimodalConfig()
   if (ingestSource && mmCfgWrites.enabled) {
     try {
       const sourceIdentity = sourceIdentityForPath(pp, ingestSource)
