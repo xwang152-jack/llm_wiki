@@ -6,6 +6,7 @@ import { apiServerStatus, clipServerStatus } from "@/commands/fs"
 import { Button } from "@/components/ui/button"
 import { API_SERVER_HEALTH_URL, API_SERVER_PORT } from "@/lib/api-server-constants"
 import { CLIP_SERVER_PORT } from "@/lib/clip-server"
+import { APP_GITHUB_REPO, APP_GITHUB_REPO_URL } from "@/lib/release-config"
 import { useUpdateStore, hasAvailableUpdate } from "@/stores/update-store"
 import { checkForUpdates, toLatestReleaseUrl } from "@/lib/update-check"
 import { saveUpdateCheckState } from "@/lib/project-store"
@@ -56,7 +57,7 @@ export function AboutSection() {
     useUpdateStore.getState().setChecking(true)
     const result = await checkForUpdates({
       currentVersion: __APP_VERSION__,
-      repo: "nashsu/llm_wiki",
+      repo: APP_GITHUB_REPO,
     })
     const now = Date.now()
     useUpdateStore.getState().setResult(result, now)
@@ -220,15 +221,15 @@ export function AboutSection() {
            */}
           <a
             className="cursor-pointer underline underline-offset-2 hover:text-primary"
-            href="https://github.com/nashsu/llm_wiki"
+            href={APP_GITHUB_REPO_URL}
             onClick={(e) => {
               e.preventDefault()
-              void openUrl("https://github.com/nashsu/llm_wiki").catch((err) => {
+              void openUrl(APP_GITHUB_REPO_URL).catch((err) => {
                 console.error("[about] openUrl failed:", err)
               })
             }}
           >
-            github.com/nashsu/llm_wiki
+            {APP_GITHUB_REPO_URL.replace(/^https?:\/\//, "")}
           </a>
         </p>
       </div>

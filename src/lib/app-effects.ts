@@ -1,5 +1,6 @@
 import { setupAutoSave } from "@/lib/auto-save"
 import { startClipWatcher } from "@/lib/clip-watcher"
+import { APP_GITHUB_RELEASES_URL, APP_GITHUB_REPO } from "@/lib/release-config"
 
 export function initializePersistentAppServices(): void {
   setupAutoSave()
@@ -39,7 +40,7 @@ export function installDevUpdateBannerTestHook(): void {
                 "- Bigger red dot on the Settings icon\n" +
                 "- Top banner with one-click dismiss\n" +
                 "- Once dismissed, won't reappear for this version",
-              html_url: "https://github.com/nashsu/llm_wiki/releases",
+              html_url: APP_GITHUB_RELEASES_URL,
               published_at: new Date().toISOString(),
             },
           },
@@ -92,7 +93,7 @@ export function scheduleBackgroundUpdateCheck(): () => void {
       console.log(`[update-check] fetching GitHub releases (local=${__APP_VERSION__})`)
       const result = await checkForUpdates({
         currentVersion: __APP_VERSION__,
-        repo: "nashsu/llm_wiki",
+        repo: APP_GITHUB_REPO,
       })
       if (cancelled) return
 
