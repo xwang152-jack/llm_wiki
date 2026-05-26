@@ -1,6 +1,11 @@
 import { readFile, listDirectory } from "@/commands/fs"
 import type { FileNode } from "@/types/wiki"
 import { normalizePath } from "@/lib/path-utils"
+import {
+  flattenMarkdownFiles,
+  parseWikiGraphDocument,
+  resolveWikiLinkTarget,
+} from "./wiki-graph-document"
 
 // ---------------------------------------------------------------------------
 // Types
@@ -25,8 +30,6 @@ export interface RetrievalGraph {
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
-
-const WIKILINK_REGEX = /\[\[([^\]|]+?)(?:\|[^\]]+?)?\]\]/g
 
 const MIN_RELEVANCE = 0.3
 
@@ -55,91 +58,6 @@ let cachedGraph: RetrievalGraph | null = null
 // ---------------------------------------------------------------------------
 // Helpers (pure)
 // ---------------------------------------------------------------------------
-
-function flattenMdFiles(nodes: readonly FileNode[]): FileNode[] {
-  const files: FileNode[] = []
-  for (const node of nodes) {
-    if (node.is_dir && node.children) {
-      files.push(...flattenMdFiles(node.children))
-    } else if (!node.is_dir && node.name.endsWith(".md")) {
-      files.push(node)
-    }
-  }
-  return files
-}
-
-function fileNameToId(fileName: string): string {
-  return fileName.replace(/\.md$/, "")
-}
-
-function extractFrontmatter(content: string): { title: string; type: string; sources: string[] } {
-  const fmMatch = content.match(/^---\n([\s\S]*?)\n---/)
-  const fm = fmMatch ? fmMatch[1] : ""
-
-  const titleMatch = fm.match(/^title:\s*["']?(.+?)["']?\s*$/m)
-  const typeMatch = fm.match(/^type:\s*["']?(.+?)["']?\s*$/m)
-
-  // Parse sources array from YAML frontmatter
-  const sources: string[] = []
-  const sourcesBlockMatch = fm.match(/^sources:\s*\n((?:\s+-\s+.+\n?)*)/m)
-  if (sourcesBlockMatch) {
-    const lines = sourcesBlockMatch[1].split("\n")
-    for (const line of lines) {
-      const itemMatch = line.match(/^\s+-\s+["']?(.+?)["']?\s*$/)
-      if (itemMatch) {
-        sources.push(itemMatch[1])
-      }
-    }
-  } else {
-    // Single-line: sources: ["a.pdf", "b.pdf"] or sources: [a.pdf]
-    const inlineMatch = fm.match(/^sources:\s*\[([^\]]*)\]/m)
-    if (inlineMatch) {
-      const items = inlineMatch[1].split(",")
-      for (const item of items) {
-        const trimmed = item.trim().replace(/^["']|["']$/g, "")
-        if (trimmed) sources.push(trimmed)
-      }
-    }
-  }
-
-  let title = titleMatch ? titleMatch[1].trim() : ""
-  if (!title) {
-    const headingMatch = content.match(/^#\s+(.+)$/m)
-    title = headingMatch ? headingMatch[1].trim() : ""
-  }
-
-  return {
-    title,
-    type: typeMatch ? typeMatch[1].trim().toLowerCase() : "other",
-    sources,
-  }
-}
-
-function extractWikilinks(content: string): string[] {
-  const links: string[] = []
-  const regex = new RegExp(WIKILINK_REGEX.source, "g")
-  let match: RegExpExecArray | null
-  while ((match = regex.exec(content)) !== null) {
-    links.push(match[1].trim())
-  }
-  return links
-}
-
-function resolveTarget(
-  raw: string,
-  nodeIds: ReadonlySet<string>,
-): string | null {
-  if (nodeIds.has(raw)) return raw
-
-  const normalized = raw.toLowerCase().replace(/\s+/g, "-")
-  for (const id of nodeIds) {
-    const idLower = id.toLowerCase()
-    if (idLower === normalized) return id
-    if (idLower === raw.toLowerCase()) return id
-    if (idLower.replace(/\s+/g, "-") === normalized) return id
-  }
-  return null
-}
 
 function getNeighbors(node: RetrievalNode): ReadonlySet<string> {
   const neighbors = new Set<string>()
@@ -185,7 +103,7 @@ export async function buildRetrievalGraph(
     return emptyGraph
   }
 
-  const mdFiles = flattenMdFiles(tree)
+  const mdFiles = flattenMarkdownFiles(tree)
 
   // First pass: read all files and build raw node data
   const rawNodes: Array<{
@@ -200,17 +118,16 @@ export async function buildRetrievalGraph(
 
   const results = await Promise.all(
     mdFiles.map(async (file) => {
-      const id = fileNameToId(file.name)
       try {
         const content = await readFile(file.path)
-        const fm = extractFrontmatter(content)
+        const parsed = parseWikiGraphDocument(content, file.name)
         return {
-          id,
-          title: fm.title || file.name.replace(/\.md$/, "").replace(/-/g, " "),
-          type: fm.type,
+          id: parsed.id,
+          title: parsed.title,
+          type: parsed.type,
           path: file.path,
-          sources: fm.sources,
-          rawLinks: extractWikilinks(content),
+          sources: parsed.sources,
+          rawLinks: parsed.links,
           fileName: file.name,
         }
       } catch {
@@ -233,7 +150,7 @@ export async function buildRetrievalGraph(
 
   for (const raw of rawNodes) {
     for (const linkTarget of raw.rawLinks) {
-      const resolvedId = resolveTarget(linkTarget, nodeIds)
+      const resolvedId = resolveWikiLinkTarget(linkTarget, nodeIds)
       if (resolvedId === null || resolvedId === raw.id) continue
       outLinksMap.get(raw.id)!.add(resolvedId)
       inLinksMap.get(resolvedId)!.add(raw.id)

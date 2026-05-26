@@ -1,4 +1,5 @@
 mod api_server;
+mod app_state;
 mod clip_server;
 mod commands;
 mod panic_guard;
@@ -76,7 +77,7 @@ pub fn run() {
             // everything: LLM, embedding, update check, deep
             // research, captioning. See src-tauri/src/proxy.rs.
             if let Ok(dir) = app.path().app_data_dir() {
-                let store_path = dir.join("app-state.json");
+                let store_path = dir.join(app_state::APP_STATE_FILE_NAME);
                 eprintln!("[proxy] reading from {}", store_path.display());
                 if let Some(cfg) = proxy::read_proxy_config_from_store(&store_path) {
                     let summary = proxy::apply_proxy_env(&cfg);

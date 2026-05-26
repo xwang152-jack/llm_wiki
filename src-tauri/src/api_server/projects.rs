@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tauri::AppHandle;
 
+use crate::app_state::APP_STATE_PROJECT_REGISTRY_KEY;
 use crate::clip_server;
 
 use super::auth::load_app_state;
@@ -35,7 +36,10 @@ pub(super) fn load_projects(app: &AppHandle) -> Vec<ProjectEntry> {
     let mut by_path: BTreeMap<String, ProjectEntry> = BTreeMap::new();
 
     if let Some(parsed) = load_app_state(app) {
-        if let Some(registry) = parsed.get("projectRegistry").and_then(Value::as_object) {
+        if let Some(registry) = parsed
+            .get(APP_STATE_PROJECT_REGISTRY_KEY)
+            .and_then(Value::as_object)
+        {
             for (id, value) in registry {
                 let path = value.get("path").and_then(Value::as_str).unwrap_or("");
                 if path.is_empty() {

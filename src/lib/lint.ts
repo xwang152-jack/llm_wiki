@@ -5,6 +5,7 @@ import type { FileNode } from "@/types/wiki"
 import { useActivityStore } from "@/stores/activity-store"
 import { getFileName, getRelativePath, normalizePath } from "@/lib/path-utils"
 import { buildLanguageDirective } from "@/lib/output-language"
+import { extractWikiLinks, flattenMarkdownFiles } from "@/lib/wiki-graph-document"
 
 export interface LintResult {
   type: "orphan" | "broken-link" | "no-outlinks" | "semantic"
@@ -15,28 +16,6 @@ export interface LintResult {
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────
-
-function flattenMdFiles(nodes: FileNode[]): FileNode[] {
-  const files: FileNode[] = []
-  for (const node of nodes) {
-    if (node.is_dir && node.children) {
-      files.push(...flattenMdFiles(node.children))
-    } else if (!node.is_dir && node.name.endsWith(".md")) {
-      files.push(node)
-    }
-  }
-  return files
-}
-
-function extractWikilinks(content: string): string[] {
-  const links: string[] = []
-  const regex = /\[\[([^\]|]+?)(?:\|[^\]]+?)?\]\]/g
-  let match: RegExpExecArray | null
-  while ((match = regex.exec(content)) !== null) {
-    links.push(match[1].trim())
-  }
-  return links
-}
 
 function relativeToSlug(relativePath: string): string {
   // relativePath relative to wiki/ dir, e.g. "entities/foo-bar" or "queries/my-page-2024-01-01"
@@ -75,7 +54,7 @@ export async function runStructuralLint(projectPath: string): Promise<LintResult
     return []
   }
 
-  const wikiFiles = flattenMdFiles(tree)
+  const wikiFiles = flattenMarkdownFiles(tree)
   // Exclude index.md and log.md from orphan checks
   const contentFiles = wikiFiles.filter(
     (f) => f.name !== "index.md" && f.name !== "log.md"
@@ -91,7 +70,7 @@ export async function runStructuralLint(projectPath: string): Promise<LintResult
     try {
       const content = await readFile(f.path)
       const slug = relativeToSlug(getRelativePath(f.path, wikiRoot))
-      const outlinks = extractWikilinks(content)
+      const outlinks = extractWikiLinks(content)
       pages.push({ path: f.path, slug, content, outlinks })
     } catch {
       // skip unreadable files
@@ -184,7 +163,7 @@ export async function runSemanticLint(
     return []
   }
 
-  const wikiFiles = flattenMdFiles(tree).filter(
+  const wikiFiles = flattenMarkdownFiles(tree).filter(
     (f) => f.name !== "log.md"
   )
 

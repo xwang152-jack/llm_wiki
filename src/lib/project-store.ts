@@ -12,15 +12,57 @@ import type {
   SearchApiConfig,
   SourceWatchConfig,
 } from "@/types/config"
+import {
+  APP_STATE_FILE_NAME,
+  APP_STATE_SCHEMA_VERSION,
+  type AppStateMigrationHealth,
+  type ProjectRegistry,
+  APP_STATE_KEYS,
+  migrateAppStateStore,
+  normalizeApiConfigValue,
+  normalizeProxyConfigValue,
+} from "@/lib/app-state-contract"
 import { normalizeSourceWatchConfig } from "@/lib/source-watch-config"
 import { normalizePath } from "@/lib/path-utils"
 
-const STORE_NAME = "app-state.json"
-const RECENT_PROJECTS_KEY = "recentProjects"
-const LAST_PROJECT_KEY = "lastProject"
+const STORE_NAME = APP_STATE_FILE_NAME
+const RECENT_PROJECTS_KEY = APP_STATE_KEYS.recentProjects
+const LAST_PROJECT_KEY = APP_STATE_KEYS.lastProject
+let appStateInitialized = false
+let lastAppStateHealth: AppStateMigrationHealth = {
+  schemaVersion: APP_STATE_SCHEMA_VERSION,
+  migrated: false,
+  migratedKeys: [],
+  warnings: [],
+}
+
+async function ensureStoreSchema(
+  store: Awaited<ReturnType<typeof load>>,
+): Promise<AppStateMigrationHealth> {
+  if (!appStateInitialized) {
+    lastAppStateHealth = await migrateAppStateStore(store)
+    appStateInitialized = true
+  }
+  return lastAppStateHealth
+}
+
+export async function initializeAppStateStore(): Promise<AppStateMigrationHealth> {
+  const store = await load(STORE_NAME, { autoSave: true, defaults: {} })
+  return ensureStoreSchema(store)
+}
 
 async function getStore() {
-  return load(STORE_NAME, { autoSave: true, defaults: {} })
+  const store = await load(STORE_NAME, { autoSave: true, defaults: {} })
+  await ensureStoreSchema(store)
+  return store
+}
+
+export function getLastAppStateHealth(): AppStateMigrationHealth {
+  return {
+    ...lastAppStateHealth,
+    migratedKeys: [...lastAppStateHealth.migratedKeys],
+    warnings: [...lastAppStateHealth.warnings],
+  }
 }
 
 export async function getRecentProjects(): Promise<WikiProject[]> {
@@ -125,7 +167,7 @@ export async function loadMultimodalConfig(): Promise<MultimodalConfig | null> {
 // (src-tauri/src/proxy.rs), which reads this exact field name from
 // the same `app-state.json` store at app launch to translate the
 // config into HTTP_PROXY / HTTPS_PROXY / NO_PROXY env vars.
-const PROXY_CONFIG_KEY = "proxyConfig"
+const PROXY_CONFIG_KEY = APP_STATE_KEYS.proxyConfig
 
 export async function saveProxyConfig(config: ProxyConfig): Promise<void> {
   const store = await getStore()
@@ -143,14 +185,14 @@ export async function saveProxyConfig(config: ProxyConfig): Promise<void> {
 
 export async function loadProxyConfig(): Promise<ProxyConfig | null> {
   const store = await getStore()
-  return (await store.get<ProxyConfig>(PROXY_CONFIG_KEY)) ?? null
+  return normalizeProxyConfigValue(await store.get<unknown>(PROXY_CONFIG_KEY))
 }
 
 // Local API server config. KEY MUST stay `apiConfig` — the Rust
 // `api_server` module reads `parsed.get("apiConfig")` from this same
 // `app-state.json` on every request (5s cache). Rename one side and
 // the API silently goes back to "no token configured = 401 forever".
-const API_CONFIG_KEY = "apiConfig"
+const API_CONFIG_KEY = APP_STATE_KEYS.apiConfig
 
 export async function saveApiConfig(config: ApiConfig): Promise<void> {
   const store = await getStore()
@@ -165,7 +207,22 @@ export async function saveApiConfig(config: ApiConfig): Promise<void> {
 
 export async function loadApiConfig(): Promise<ApiConfig | null> {
   const store = await getStore()
-  return (await store.get<ApiConfig>(API_CONFIG_KEY)) ?? null
+  return normalizeApiConfigValue(await store.get<unknown>(API_CONFIG_KEY))
+}
+
+export async function loadProjectRegistry(): Promise<ProjectRegistry> {
+  const store = await getStore()
+  const registry = await store.get<unknown>(APP_STATE_KEYS.projectRegistry)
+  if (registry && typeof registry === "object" && !Array.isArray(registry)) {
+    return registry as ProjectRegistry
+  }
+  return {}
+}
+
+export async function saveProjectRegistry(registry: ProjectRegistry): Promise<void> {
+  const store = await getStore()
+  await store.set(APP_STATE_KEYS.projectRegistry, registry)
+  await store.save()
 }
 
 const SCHEDULED_IMPORT_KEY_PREFIX = "scheduledImportConfig:"
@@ -231,7 +288,7 @@ export async function loadLanguage(): Promise<string | null> {
 const OUTPUT_LANGUAGE_KEY = "outputLanguage"
 const PROJECT_OUTPUT_LANGUAGE_KEY = "projectOutputLanguages"
 const PROJECT_FILE_SYNC_KEY = "projectFileSyncEnabled"
-const SOURCE_WATCH_CONFIG_KEY = "sourceWatchConfig"
+const SOURCE_WATCH_CONFIG_KEY = APP_STATE_KEYS.sourceWatchConfig
 
 export async function saveOutputLanguage(lang: OutputLanguage, projectId?: string): Promise<void> {
   const store = await getStore()

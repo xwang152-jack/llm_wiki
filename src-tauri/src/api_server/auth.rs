@@ -1,9 +1,15 @@
+use std::collections::BTreeSet;
 use std::fs;
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 
 use serde_json::Value;
 use tauri::{AppHandle, Manager};
+
+use crate::app_state::{
+    APP_STATE_API_CONFIG_KEY, APP_STATE_FILE_NAME, APP_STATE_PROJECT_REGISTRY_KEY,
+    EXPECTED_APP_STATE_SCHEMA_VERSION,
+};
 
 use super::common::parse_query;
 use super::APP_STATE_CACHE_TTL;
@@ -15,12 +21,65 @@ struct CachedAppState {
 }
 
 static APP_STATE_CACHE: OnceLock<Mutex<Option<CachedAppState>>> = OnceLock::new();
+static APP_STATE_WARNINGS: OnceLock<Mutex<BTreeSet<&'static str>>> = OnceLock::new();
 
 pub(super) fn invalidate_config_cache() {
     if let Some(lock) = APP_STATE_CACHE.get() {
         if let Ok(mut cache) = lock.lock() {
             *cache = None;
         }
+    }
+}
+
+fn warn_app_state_once(issue_id: &'static str, message: impl AsRef<str>) {
+    let lock = APP_STATE_WARNINGS.get_or_init(|| Mutex::new(BTreeSet::new()));
+    if let Ok(mut seen) = lock.lock() {
+        if seen.insert(issue_id) {
+            eprintln!("{}", message.as_ref());
+        }
+    }
+}
+
+fn validate_app_state_contract(parsed: &Value, source: &str) {
+    match parsed.get("schemaVersion").and_then(Value::as_i64) {
+        Some(EXPECTED_APP_STATE_SCHEMA_VERSION) => {}
+        Some(version) => warn_app_state_once(
+            "schema_version_mismatch",
+            format!(
+                "[app-state] unexpected schemaVersion={version} in {source}; expected {}",
+                EXPECTED_APP_STATE_SCHEMA_VERSION
+            ),
+        ),
+        None => warn_app_state_once(
+            "schema_version_missing",
+            format!(
+                "[app-state] missing schemaVersion in {source}; frontend/Rust config contract may be stale"
+            ),
+        ),
+    }
+
+    if parsed
+        .get(APP_STATE_API_CONFIG_KEY)
+        .is_some_and(|value| !value.is_object())
+    {
+        warn_app_state_once(
+            "api_config_invalid_type",
+            format!(
+                "[app-state] apiConfig is not an object in {source}; Rust API will fall back to defaults"
+            ),
+        );
+    }
+
+    if parsed
+        .get(APP_STATE_PROJECT_REGISTRY_KEY)
+        .is_some_and(|value| !value.is_object())
+    {
+        warn_app_state_once(
+            "project_registry_invalid_type",
+            format!(
+                "[app-state] projectRegistry is not an object in {source}; local API project discovery may be incomplete"
+            ),
+        );
     }
 }
 
@@ -121,10 +180,27 @@ pub(super) fn load_app_state(app: &AppHandle) -> Option<Value> {
         }
     }
 
-    let path = app.path().app_data_dir().ok()?.join("app-state.json");
-    let loaded = fs::read_to_string(path)
-        .ok()
-        .and_then(|raw| serde_json::from_str::<Value>(&raw).ok());
+    let path = app.path().app_data_dir().ok()?.join(APP_STATE_FILE_NAME);
+    let path_display = path.display().to_string();
+    let loaded = match fs::read_to_string(&path) {
+        Ok(raw) => match serde_json::from_str::<Value>(&raw) {
+            Ok(parsed) => {
+                validate_app_state_contract(&parsed, &path_display);
+                Some(parsed)
+            }
+            Err(error) => {
+                warn_app_state_once(
+                    "app_state_json_parse_failed",
+                    format!(
+                        "[app-state] failed to parse {} as JSON: {error}",
+                        path_display
+                    ),
+                );
+                None
+            }
+        },
+        Err(_) => None,
+    };
     let value = loaded.or(previous);
 
     if let Ok(mut cache) = lock.lock() {
@@ -138,7 +214,7 @@ pub(super) fn load_app_state(app: &AppHandle) -> Option<Value> {
 
 fn api_config_token(parsed: &Value) -> Option<String> {
     parsed
-        .get("apiConfig")
+        .get(APP_STATE_API_CONFIG_KEY)
         .and_then(|value| value.get("token"))
         .and_then(Value::as_str)
         .filter(|value| !value.is_empty())
@@ -147,7 +223,7 @@ fn api_config_token(parsed: &Value) -> Option<String> {
 
 fn api_config_bool(parsed: &Value, key: &str, default: bool) -> bool {
     parsed
-        .get("apiConfig")
+        .get(APP_STATE_API_CONFIG_KEY)
         .and_then(|value| value.get(key))
         .and_then(Value::as_bool)
         .unwrap_or(default)
@@ -192,5 +268,15 @@ mod tests {
         assert!(constant_time_eq(b"", b""));
         assert!(!constant_time_eq(b"token", b"tokeN"));
         assert!(!constant_time_eq(b"token", b"token-longer"));
+    }
+
+    #[test]
+    fn validate_app_state_contract_accepts_expected_schema() {
+        let payload = json!({
+            "schemaVersion": EXPECTED_APP_STATE_SCHEMA_VERSION,
+            "apiConfig": { "enabled": true },
+            "projectRegistry": {}
+        });
+        validate_app_state_contract(&payload, "test");
     }
 }

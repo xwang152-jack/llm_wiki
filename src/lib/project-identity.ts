@@ -13,26 +13,18 @@
  *     `{ [id]: { id, path, name, lastOpened } }`
  */
 
-import { load } from "@tauri-apps/plugin-store"
 import { readFile, writeFile } from "@/commands/fs"
 import { normalizePath } from "@/lib/path-utils"
-
-const STORE_NAME = "app-state.json"
-const REGISTRY_KEY = "projectRegistry"
+import {
+  loadProjectRegistry,
+  saveProjectRegistry,
+} from "@/lib/project-store"
+import type { ProjectRegistry } from "@/lib/app-state-contract"
 
 export interface ProjectIdentity {
   id: string
   createdAt: number
 }
-
-export interface ProjectRegistryEntry {
-  id: string
-  path: string       // latest known filesystem path (normalized forward slashes)
-  name: string
-  lastOpened: number
-}
-
-export type ProjectRegistry = Record<string, ProjectRegistryEntry>
 
 // ── Per-project identity (reads/creates `.llm-wiki/project.json`) ─────────
 
@@ -69,23 +61,16 @@ export async function ensureProjectId(projectPath: string): Promise<string> {
 
 // ── Global registry (Tauri plugin-store) ──────────────────────────────────
 
-async function getStore() {
-  return load(STORE_NAME, { autoSave: true, defaults: {} })
-}
-
 export async function loadRegistry(): Promise<ProjectRegistry> {
   try {
-    const store = await getStore()
-    const registry = await store.get<ProjectRegistry>(REGISTRY_KEY)
-    return registry ?? {}
+    return await loadProjectRegistry()
   } catch {
     return {}
   }
 }
 
 async function saveRegistry(registry: ProjectRegistry): Promise<void> {
-  const store = await getStore()
-  await store.set(REGISTRY_KEY, registry)
+  await saveProjectRegistry(registry)
 }
 
 /**

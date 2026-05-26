@@ -1,49 +1,17 @@
 import { readFile, listDirectory } from "@/commands/fs"
 import { normalizePath } from "@/lib/path-utils"
 import { useReviewStore } from "@/stores/review-store"
+import {
+  extractWikiLinks,
+  flattenMarkdownFiles,
+  parseWikiGraphDocument,
+} from "@/lib/wiki-graph-document"
 
 interface HealthIssue {
   type: "orphan" | "broken-link" | "empty-page" | "duplicate-title"
   title: string
   path: string
   detail: string
-}
-
-/** Extract [[wikilinks]] from markdown content */
-function extractWikiLinks(content: string): string[] {
-  const re = /\[\[([^\]|]+)(?:\|[^\]]+)?\]\]/g
-  const links: string[] = []
-  let m: RegExpExecArray | null
-  while ((m = re.exec(content)) !== null) {
-    links.push(m[1].trim())
-  }
-  return links
-}
-
-/** Get the title from the first markdown heading or filename */
-function extractTitle(content: string, fileName: string): string {
-  const heading = content.split("\n").find((l) => l.startsWith("# "))
-  return heading ? heading.replace(/^#\s+/, "").trim() : fileName.replace(/\.md$/, "")
-}
-
-/** Recursively list all .md files under wiki/ */
-async function collectWikiPages(wikiPath: string): Promise<string[]> {
-  const pages: string[] = []
-  try {
-    const nodes = await listDirectory(wikiPath)
-    if (!Array.isArray(nodes)) return pages
-    for (const node of nodes) {
-      if (!node.is_dir && node.name.endsWith(".md")) {
-        pages.push(`${wikiPath}/${node.name}`)
-      } else if (node.is_dir) {
-        const subPages = await collectWikiPages(`${wikiPath}/${node.name}`)
-        pages.push(...subPages)
-      }
-    }
-  } catch {
-    // directory may not exist
-  }
-  return pages
 }
 
 /** Resolve a wikilink target to possible file paths */
@@ -67,7 +35,13 @@ export async function runHealthCheck(projectPath: string): Promise<number> {
   const wikiPath = `${pp}/wiki`
   const issues: HealthIssue[] = []
 
-  const pagePaths = await collectWikiPages(wikiPath)
+  let tree
+  try {
+    tree = await listDirectory(wikiPath)
+  } catch {
+    return 0
+  }
+  const pagePaths = flattenMarkdownFiles(tree).map((node) => node.path)
   if (pagePaths.length === 0) return 0
 
   const pages = new Map<string, { content: string; title: string; path: string }>()
@@ -78,7 +52,7 @@ export async function runHealthCheck(projectPath: string): Promise<number> {
     try {
       const content = await readFile(pagePath)
       const fileName = pagePath.split("/").pop() ?? ""
-      const title = extractTitle(content, fileName)
+      const title = parseWikiGraphDocument(content, fileName).title
       pages.set(pagePath, { content, title, path: pagePath })
 
       const lowerTitle = title.toLowerCase()

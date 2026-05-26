@@ -23,6 +23,7 @@ import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { API_SERVER_BASE_URL } from "./api-server-constants"
+import { APP_STATE_FILE_NAME, APP_STATE_KEYS } from "@/lib/app-state-contract"
 
 const ENABLED = process.env.RUN_API_TESTS === "1" || process.env.RUN_LLM_TESTS === "1"
 const BASE_URL = process.env.API_BASE_URL ?? API_SERVER_BASE_URL
@@ -219,19 +220,27 @@ function appStateCandidates(): string[] {
   const candidates = explicit ? [explicit] : []
   if (process.platform === "darwin") {
     candidates.push(
-      path.join(home, "Library/Application Support/com.llmwiki.app/app-state.json"),
-      path.join(home, "Library/Application Support/LLM Wiki/app-state.json"),
+      path.join(home, "Library/Application Support/com.llmwiki.app", APP_STATE_FILE_NAME),
+      path.join(home, "Library/Application Support/LLM Wiki", APP_STATE_FILE_NAME),
     )
   } else if (process.platform === "win32") {
     const appData = process.env.APPDATA ?? path.join(home, "AppData/Roaming")
     candidates.push(
-      path.join(appData, "com.llmwiki.app/app-state.json"),
-      path.join(appData, "LLM Wiki/app-state.json"),
+      path.join(appData, "com.llmwiki.app", APP_STATE_FILE_NAME),
+      path.join(appData, "LLM Wiki", APP_STATE_FILE_NAME),
     )
   } else {
     candidates.push(
-      path.join(process.env.XDG_DATA_HOME ?? path.join(home, ".local/share"), "com.llmwiki.app/app-state.json"),
-      path.join(process.env.XDG_CONFIG_HOME ?? path.join(home, ".config"), "com.llmwiki.app/app-state.json"),
+      path.join(
+        process.env.XDG_DATA_HOME ?? path.join(home, ".local/share"),
+        "com.llmwiki.app",
+        APP_STATE_FILE_NAME,
+      ),
+      path.join(
+        process.env.XDG_CONFIG_HOME ?? path.join(home, ".config"),
+        "com.llmwiki.app",
+        APP_STATE_FILE_NAME,
+      ),
     )
   }
   return [...new Set(candidates)]
@@ -262,7 +271,7 @@ async function writeApiConfig(config: {
   token: string
 }): Promise<void> {
   const state = await readAppState()
-  state.apiConfig = config
+  state[APP_STATE_KEYS.apiConfig] = config
   await fs.writeFile(appStatePath!, `${JSON.stringify(state, null, 2)}\n`, "utf8")
   appStateMutated = true
 }

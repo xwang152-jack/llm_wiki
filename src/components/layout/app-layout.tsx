@@ -1,7 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from "react"
+import { useCallback, useRef, useState } from "react"
 import { useWikiStore } from "@/stores/wiki-store"
-import { listDirectory } from "@/commands/fs"
-import { normalizePath } from "@/lib/path-utils"
 import { IconSidebar } from "./icon-sidebar"
 import { UpdateBanner } from "./update-banner"
 import { SidebarPanel } from "./sidebar-panel"
@@ -17,30 +15,14 @@ interface AppLayoutProps {
 }
 
 export function AppLayout({ onSwitchProject }: AppLayoutProps) {
-  const project = useWikiStore((s) => s.project)
   const selectedFile = useWikiStore((s) => s.selectedFile)
   const activeView = useWikiStore((s) => s.activeView)
   const researchPanelOpen = useResearchStore((s) => s.panelOpen)
-  const setFileTree = useWikiStore((s) => s.setFileTree)
   const [leftWidth, setLeftWidth] = useState(220)
   const [rightWidth, setRightWidth] = useState(400)
   const isDraggingLeft = useRef(false)
   const isDraggingRight = useRef(false)
   const containerRef = useRef<HTMLDivElement>(null)
-
-  const loadFileTree = useCallback(async () => {
-    if (!project) return
-    try {
-      const tree = await listDirectory(normalizePath(project.path))
-      setFileTree(tree)
-    } catch (err) {
-      console.error("Failed to load file tree:", err)
-    }
-  }, [project, setFileTree])
-
-  useEffect(() => {
-    loadFileTree()
-  }, [loadFileTree])
 
   const startDrag = useCallback(
     (side: "left" | "right") => (e: React.MouseEvent) => {

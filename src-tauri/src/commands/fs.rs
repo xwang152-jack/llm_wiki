@@ -1495,18 +1495,29 @@ pub async fn get_file_md5(path: String) -> Result<String, String> {
 mod tests {
     use super::*;
     use std::io::Write;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static TEST_TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    fn unique_test_id(label: &str) -> String {
+        let sequence = TEST_TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+        format!(
+            "{}-{}-{}",
+            label,
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+                + u128::from(sequence)
+        )
+    }
 
     /// Write `bytes` to a fresh tmp path with `.pdf` suffix and return
     /// the path (the OS tmpdir is NOT cleaned up — acceptable for tests).
     fn tmp_pdf_with_bytes(bytes: &[u8]) -> String {
         let dir = std::env::temp_dir();
-        let path = dir.join(format!(
-            "panic-guard-{}.pdf",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let path = dir.join(format!("{}.pdf", unique_test_id("panic-guard")));
         let mut f = fs::File::create(&path).unwrap();
         f.write_all(bytes).unwrap();
         path.to_string_lossy().to_string()
@@ -1683,13 +1694,7 @@ mod tests {
     // would be surfaced here and then wrongly deleted downstream.
 
     fn make_wiki(files: &[(&str, &str)]) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "wiki-test-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let dir = std::env::temp_dir().join(unique_test_id("wiki-test"));
         fs::create_dir_all(&dir).unwrap();
         for (rel, body) in files {
             let p = dir.join(rel);
@@ -1888,13 +1893,7 @@ mod tests {
     // folder import button.
 
     fn make_temp_dir(label: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "llmwiki-copydir-{label}-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let dir = std::env::temp_dir().join(unique_test_id(&format!("llmwiki-copydir-{label}")));
         std::fs::create_dir_all(&dir).unwrap();
         dir
     }

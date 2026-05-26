@@ -1,6 +1,7 @@
 import { create } from "zustand"
 import type { WikiProject, FileNode } from "@/types/wiki"
 import { DEFAULT_SOURCE_WATCH_CONFIG } from "@/lib/source-watch-config"
+import { DEFAULT_API_CONFIG, DEFAULT_PROXY_CONFIG } from "@/lib/app-state-contract"
 import { saveSearchHistory, loadSearchHistory as loadSearchHistoryFromStore, saveSearchFeedback, loadSearchFeedback as loadSearchFeedbackFromStore, type SearchFeedbackEntry } from "@/lib/project-store"
 
 /**
@@ -379,11 +380,7 @@ export const useWikiStore = create<WikiState>((set, get) => ({
 
   outputLanguage: "auto",
 
-  proxyConfig: {
-    enabled: false,
-    url: "",
-    bypassLocal: true,
-  },
+  proxyConfig: DEFAULT_PROXY_CONFIG,
 
   scheduledImportConfig: {
     enabled: false,
@@ -399,11 +396,7 @@ export const useWikiStore = create<WikiState>((set, get) => ({
   // hand-edited keeps their working API. New users land in
   // "enabled + no token = 401 on every endpoint" — fail-closed by
   // virtue of the token being empty.
-  apiConfig: {
-    enabled: true,
-    allowUnauthenticated: false,
-    token: "",
-  },
+  apiConfig: DEFAULT_API_CONFIG,
 
   searchHistory: [],
   searchFeedback: [],

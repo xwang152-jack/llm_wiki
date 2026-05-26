@@ -3,6 +3,7 @@ import { openProject } from "@/commands/fs"
 import { useWikiStore } from "@/stores/wiki-store"
 import {
   getLastProject,
+  initializeAppStateStore,
   loadActivePresetId,
   loadApiConfig,
   loadEmbeddingConfig,
@@ -22,6 +23,15 @@ export async function initializeApp(
   openProjectSession: (project: WikiProject) => Promise<void>,
 ): Promise<void> {
   const store = useWikiStore.getState()
+  const appStateHealth = await initializeAppStateStore()
+  if (appStateHealth.migrated) {
+    console.info(
+      `[app-state] migrated schema v${appStateHealth.schemaVersion}: ${appStateHealth.migratedKeys.join(", ")}`,
+    )
+  }
+  for (const warning of appStateHealth.warnings) {
+    console.warn(`[app-state] ${warning}`)
+  }
 
   const savedConfig = await loadLlmConfig()
   if (savedConfig) {

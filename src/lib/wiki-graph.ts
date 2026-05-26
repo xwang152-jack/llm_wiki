@@ -3,6 +3,11 @@ import type { FileNode } from "@/types/wiki"
 import { buildRetrievalGraph, calculateRelevance, clearGraphCache } from "./graph-relevance"
 import { normalizePath } from "@/lib/path-utils"
 import { saveSnapshot, type GraphSnapshot } from "./graph-snapshot"
+import {
+  flattenMarkdownFiles,
+  parseWikiGraphDocument,
+  resolveWikiLinkTarget,
+} from "./wiki-graph-document"
 import Graph from "graphology"
 import louvain from "graphology-communities-louvain"
 
@@ -113,50 +118,6 @@ function detectCommunities(
   return { assignments, communities }
 }
 
-const WIKILINK_REGEX = /\[\[([^\]|]+?)(?:\|[^\]]+?)?\]\]/g
-
-function flattenMdFiles(nodes: FileNode[]): FileNode[] {
-  const files: FileNode[] = []
-  for (const node of nodes) {
-    if (node.is_dir && node.children) {
-      files.push(...flattenMdFiles(node.children))
-    } else if (!node.is_dir && node.name.endsWith(".md")) {
-      files.push(node)
-    }
-  }
-  return files
-}
-
-function extractTitle(content: string, fileName: string): string {
-  const frontmatterTitleMatch = content.match(/^---\n[\s\S]*?^title:\s*["']?(.+?)["']?\s*$/m)
-  if (frontmatterTitleMatch) return frontmatterTitleMatch[1].trim()
-
-  const headingMatch = content.match(/^#\s+(.+)$/m)
-  if (headingMatch) return headingMatch[1].trim()
-
-  return fileName.replace(/\.md$/, "").replace(/-/g, " ")
-}
-
-function extractType(content: string): string {
-  const frontmatterTypeMatch = content.match(/^---\n[\s\S]*?^type:\s*["']?(.+?)["']?\s*$/m)
-  if (frontmatterTypeMatch) return frontmatterTypeMatch[1].trim().toLowerCase()
-  return "other"
-}
-
-function extractWikilinks(content: string): string[] {
-  const links: string[] = []
-  const regex = new RegExp(WIKILINK_REGEX.source, "g")
-  let match: RegExpExecArray | null
-  while ((match = regex.exec(content)) !== null) {
-    links.push(match[1].trim())
-  }
-  return links
-}
-
-function fileNameToId(fileName: string): string {
-  return fileName.replace(/\.md$/, "")
-}
-
 export async function buildWikiGraph(
   projectPath: string,
 ): Promise<{ nodes: GraphNode[]; edges: GraphEdge[]; communities: CommunityInfo[] }> {
@@ -169,7 +130,7 @@ export async function buildWikiGraph(
     return { nodes: [], edges: [], communities: [] }
   }
 
-  const mdFiles = flattenMdFiles(tree)
+  const mdFiles = flattenMarkdownFiles(tree)
   if (mdFiles.length === 0) {
     return { nodes: [], edges: [], communities: [] }
   }
@@ -182,15 +143,15 @@ export async function buildWikiGraph(
 
   const entries = await Promise.all(
     mdFiles.map(async (file) => {
-      const id = fileNameToId(file.name)
       try {
         const content = await readFile(file.path)
+        const parsed = parseWikiGraphDocument(content, file.name)
         return {
-          id,
-          label: extractTitle(content, file.name),
-          type: extractType(content),
+          id: parsed.id,
+          label: parsed.title,
+          type: parsed.type,
           path: file.path,
-          links: extractWikilinks(content),
+          links: parsed.links,
         }
       } catch {
         return null
@@ -210,6 +171,7 @@ export async function buildWikiGraph(
       nodeMap.delete(id)
     }
   }
+  const nodeIds = new Set(nodeMap.keys())
 
   // Count link references
   const linkCounts = new Map<string, number>()
@@ -222,7 +184,7 @@ export async function buildWikiGraph(
   for (const [sourceId, nodeData] of nodeMap) {
     for (const targetRaw of nodeData.links) {
       // Normalize target: try matching by id (case-insensitive, hyphen/space)
-      const targetId = resolveTarget(targetRaw, nodeMap)
+      const targetId = resolveWikiLinkTarget(targetRaw, nodeIds)
       if (targetId === null) continue
       if (targetId === sourceId) continue
 
@@ -318,22 +280,4 @@ export async function buildWikiGraph(
   saveSnapshot(projectPath, snapshot).catch(() => {})
 
   return { nodes, edges, communities }
-}
-
-function resolveTarget(
-  raw: string,
-  nodeMap: Map<string, { id: string }>,
-): string | null {
-  // Direct match
-  if (nodeMap.has(raw)) return raw
-
-  // Normalize: lowercase, replace spaces with hyphens and vice versa
-  const normalized = raw.toLowerCase().replace(/\s+/g, "-")
-  for (const id of nodeMap.keys()) {
-    if (id.toLowerCase() === normalized) return id
-    if (id.toLowerCase() === raw.toLowerCase()) return id
-    if (id.toLowerCase().replace(/\s+/g, "-") === normalized) return id
-  }
-
-  return null
 }

@@ -10,15 +10,19 @@
 //! Reading the on-disk JSON directly (rather than going through a
 //! Rust binding to plugin-store) keeps this module independent of
 //! plugin lifecycle: we only need a stable file path and serde.
-//! Cost is one duplicated key name (`proxyConfig`) — see
-//! src/lib/project-store.ts for the matching write site.
+//! Shared key names live in `src-tauri/src/app_state.rs`; keep them
+//! aligned with the frontend contract in `src/lib/app-state-contract.ts`.
 
 use std::path::Path;
+use std::sync::{Mutex, OnceLock};
 
 use serde::{Deserialize, Serialize};
 
+use crate::app_state::{APP_STATE_PROXY_CONFIG_KEY, EXPECTED_APP_STATE_SCHEMA_VERSION};
+
 const DEFAULT_BYPASS_LIST: &str =
     "localhost,127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,*.local";
+static PROXY_WARNINGS: OnceLock<Mutex<std::collections::BTreeSet<&'static str>>> = OnceLock::new();
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ProxyConfig {
@@ -51,14 +55,78 @@ fn default_true() -> bool {
     true
 }
 
-/// Read `proxyConfig` out of the project's `app-state.json`. Returns
+fn warn_proxy_once(issue_id: &'static str, message: impl AsRef<str>) {
+    let lock = PROXY_WARNINGS.get_or_init(|| Mutex::new(std::collections::BTreeSet::new()));
+    if let Ok(mut seen) = lock.lock() {
+        if seen.insert(issue_id) {
+            eprintln!("{}", message.as_ref());
+        }
+    }
+}
+
+/// Read the shared proxy config out of the project's `app-state.json`. Returns
 /// None if the file doesn't exist, can't be parsed, or has no proxy
 /// section — caller treats those identically to "no proxy".
 pub fn read_proxy_config_from_store(store_path: &Path) -> Option<ProxyConfig> {
     let content = std::fs::read_to_string(store_path).ok()?;
-    let json: serde_json::Value = serde_json::from_str(&content).ok()?;
-    let proxy = json.get("proxyConfig")?;
-    serde_json::from_value(proxy.clone()).ok()
+    let json: serde_json::Value = match serde_json::from_str(&content) {
+        Ok(json) => json,
+        Err(error) => {
+            warn_proxy_once(
+                "proxy_store_parse_failed",
+                format!(
+                    "[proxy] failed to parse {} as JSON: {error}",
+                    store_path.display()
+                ),
+            );
+            return None;
+        }
+    };
+    match json
+        .get("schemaVersion")
+        .and_then(serde_json::Value::as_i64)
+    {
+        Some(EXPECTED_APP_STATE_SCHEMA_VERSION) => {}
+        Some(version) => warn_proxy_once(
+            "proxy_schema_version_mismatch",
+            format!(
+                "[proxy] unexpected schemaVersion={version} in {}; expected {}",
+                store_path.display(),
+                EXPECTED_APP_STATE_SCHEMA_VERSION
+            ),
+        ),
+        None => warn_proxy_once(
+            "proxy_schema_version_missing",
+            format!(
+                "[proxy] missing schemaVersion in {}; proxy contract may be stale",
+                store_path.display()
+            ),
+        ),
+    }
+    let proxy = json.get(APP_STATE_PROXY_CONFIG_KEY)?;
+    if !proxy.is_object() {
+        warn_proxy_once(
+            "proxy_config_invalid_type",
+            format!(
+                "[proxy] proxyConfig is not an object in {}; ignoring stored proxy settings",
+                store_path.display()
+            ),
+        );
+        return None;
+    }
+    match serde_json::from_value(proxy.clone()) {
+        Ok(config) => Some(config),
+        Err(error) => {
+            warn_proxy_once(
+                "proxy_config_deserialize_failed",
+                format!(
+                    "[proxy] proxyConfig in {} has an unexpected shape: {error}",
+                    store_path.display()
+                ),
+            );
+            None
+        }
+    }
 }
 
 /// Apply a proxy config by setting the env vars reqwest reads.
